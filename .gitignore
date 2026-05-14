@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+pytest-cache-files-*/
+downloads/
+downloads_resume_test/
+imgbb_downloads/
+*.log
+config.toml

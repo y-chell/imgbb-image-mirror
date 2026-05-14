@@ -1,0 +1,13 @@
+# imgbb-image-mirror
+
+[scraper]
+output = "./downloads"
+workers = 4
+delay = 0.5
+max_pages = 100
+# user_agent = "custom UA string"
+
+[imgbb]
+enabled = false
+cookie = ""
+auth_token = ""
