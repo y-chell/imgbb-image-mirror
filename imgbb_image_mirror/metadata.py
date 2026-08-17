@@ -1,19 +1,43 @@
 import json
 import os
-from datetime import datetime, timezone
+import tempfile
+from contextlib import suppress
+from datetime import UTC, datetime
 
 
 def load_metadata_file(path: str) -> dict | None:
     if not os.path.exists(path):
         return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        # 进程中途崩溃可能留下半截 JSON：不抛异常，交由调用方按"无缓存"重建
+        return None
 
 
 def save_metadata_file(path: str, metadata: dict):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, ensure_ascii=False, indent=2)
+    """原子写入：先写临时文件再 os.replace，避免中断留下半个 JSON。
+
+    失败时保证不破坏原文件 —— 临时文件会保留为孤儿，由调用方清理。
+    """
+    target_dir = os.path.dirname(path)
+    if target_dir:
+        os.makedirs(target_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".tmp_", suffix=os.path.basename(path), dir=target_dir or None
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        # 清理临时文件，原文件保持不变
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 
 def load_metadata(album_dir: str) -> dict | None:
@@ -32,23 +56,32 @@ def create_metadata(album: dict, source_url: str = "") -> dict:
         "album_name": album["name"],
         "album_url": album["url"],
         "source_url": source_url,
-        "scraped_at": datetime.now(timezone.utc).isoformat(),
+        "scraped_at": datetime.now(UTC).isoformat(),
         "images": [],
     }
 
 
-def add_image_entry(metadata: dict, index: int, original_url: str,
-                    thumb_url: str, page_url: str, filename: str, alt: str):
-    metadata["images"].append({
-        "index": index,
-        "original_url": original_url,
-        "thumb_url": thumb_url,
-        "page_url": page_url,
-        "filename": filename,
-        "alt": alt,
-        "size": 0,
-        "status": "pending",
-    })
+def add_image_entry(
+    metadata: dict,
+    index: int,
+    original_url: str,
+    thumb_url: str,
+    page_url: str,
+    filename: str,
+    alt: str,
+):
+    metadata["images"].append(
+        {
+            "index": index,
+            "original_url": original_url,
+            "thumb_url": thumb_url,
+            "page_url": page_url,
+            "filename": filename,
+            "alt": alt,
+            "size": 0,
+            "status": "pending",
+        }
+    )
 
 
 def mark_downloaded(metadata: dict, index: int, size: int):

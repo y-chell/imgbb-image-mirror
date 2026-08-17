@@ -9,10 +9,16 @@ description = "Mirror supported image albums to imgbb with resume metadata."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "httpx>=0.27",
+    "curl_cffi>=0.7",
+    "parsel>=1.9",
     "rich>=13.0",
     "playwright>=1.40",
 ]
+
+[project.optional-dependencies]
+# keyring: 可选，imgbb cookie/token 可从系统密钥库读取
+keyring = ["keyring>=24"]
+dev = ["ruff>=0.6", "mypy>=1.11", "pytest>=8"]
 
 [project.scripts]
 imgbb-image-mirror = "imgbb_image_mirror.__main__:main"
@@ -21,3 +27,35 @@ imgbb-scraper = "imgbb_image_mirror.__main__:main"
 [tool.pytest.ini_options]
 addopts = "-v --tb=short"
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["downloads", "downloads_resume_test"]
+
+[tool.ruff.lint]
+# 默认 E/F；再加 I（import 排序）、UP（pyupgrade）、B（bugbear）、C4、SIM
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",   # 行长由 formatter 管，lint 不单独报
+    "B008",    # 函数默认值里调用函数（pytest fixture 等场景常见）
+    "SIM117",  # 嵌套 with 合并（有时降低可读性）
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # 测试里允许 assert False
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+# 项目历史无类型注解基础，先用宽松模式起步，逐步收紧
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# 暂时不强制全量：只报明确错误，未注解函数不报
+disallow_untyped_defs = false
+exclude = ["downloads/", "downloads_resume_test/", "tests/"]
+

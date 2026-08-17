@@ -1,21 +1,85 @@
 import os
 import re
+from typing import TYPE_CHECKING
+
 from playwright.sync_api import sync_playwright
 
-from .parser import parse_xchina_album_name, parse_xchina_photo_pages, parse_xchina_original_url
+from .parser import parse_xchina_album_name, parse_xchina_original_url, parse_xchina_photo_pages
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Browser, BrowserContext, Page, Playwright
+
+
+def derive_xchina_direct_urls(
+    first_original_url: str, total: int, referer_url: str = ""
+) -> list[dict] | None:
+    """从首张原图直链推导整套图片的直链。
+
+    xchina 相册的图片直链形如
+    ``https://img.xchina.io/photos/{album_id}/NNNNN.jpg``，序号从 1 到 total。
+    实测序号位数固定为 5 位（00001.jpg ~ 00117.jpg），但不同相册可能不同，
+    所以这里从首张 URL 提取实际位数动态决定宽度，避免写死 04d 导致 404。
+
+    推导失败（首张 URL 不符合预期格式）返回 None，由调用方回退到逐页解析。
+    """
+    direct_match = re.search(
+        r"(https://img\.xchina\.io/photos2?/[^/]+/)(\d+)(\.[a-zA-Z0-9]+)$",
+        first_original_url,
+    )
+    if not direct_match:
+        return None
+
+    prefix = direct_match.group(1)
+    ext = direct_match.group(3)
+    width = len(direct_match.group(2))
+    return [
+        {
+            "page_url": "",
+            "thumb": "",
+            "alt": f"{idx:0{width}d}{ext}",
+            "source": "xchina",
+            "direct_url": f"{prefix}{idx:0{width}d}{ext}",
+            "referer_url": referer_url,
+        }
+        for idx in range(1, total + 1)
+    ]
 
 
 def _read_devtools_endpoint() -> str:
     candidates = [
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "User Data", "DevToolsActivePort"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome Dev", "User Data", "DevToolsActivePort"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome Beta", "User Data", "DevToolsActivePort"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome SxS", "User Data", "DevToolsActivePort"),
+        os.path.join(
+            os.environ.get("LOCALAPPDATA", ""),
+            "Google",
+            "Chrome",
+            "User Data",
+            "DevToolsActivePort",
+        ),
+        os.path.join(
+            os.environ.get("LOCALAPPDATA", ""),
+            "Google",
+            "Chrome Dev",
+            "User Data",
+            "DevToolsActivePort",
+        ),
+        os.path.join(
+            os.environ.get("LOCALAPPDATA", ""),
+            "Google",
+            "Chrome Beta",
+            "User Data",
+            "DevToolsActivePort",
+        ),
+        os.path.join(
+            os.environ.get("LOCALAPPDATA", ""),
+            "Google",
+            "Chrome SxS",
+            "User Data",
+            "DevToolsActivePort",
+        ),
     ]
     for path in candidates:
         if not os.path.exists(path):
             continue
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             lines = [line.strip() for line in f.readlines() if line.strip()]
         if len(lines) >= 2:
             port = lines[0]
@@ -27,10 +91,10 @@ def _read_devtools_endpoint() -> str:
 class BrowserBridge:
     def __init__(self, browser_url: str = ""):
         self.browser_url = browser_url or _read_devtools_endpoint()
-        self._playwright = None
-        self._browser = None
-        self._context = None
-        self._asset_page = None
+        self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
+        self._context: BrowserContext | None = None
+        self._asset_page: Page | None = None
 
     def __enter__(self):
         self._playwright = sync_playwright().start()
@@ -49,7 +113,8 @@ class BrowserBridge:
         if self._playwright:
             self._playwright.stop()
 
-    def _new_page(self):
+    def _new_page(self) -> Page:
+        assert self._context is not None, "BrowserBridge 未进入上下文"
         return self._context.new_page()
 
     def _get_asset_page(self, referer_url: str):
@@ -107,21 +172,10 @@ class BrowserBridge:
             total = int(total_match.group(2)) if total_match else len(photo_pages)
             album["count"] = total
 
-            direct_match = re.search(r"(https://img\.xchina\.io/photos2/[^/]+/)(\d+)(\.[a-zA-Z0-9]+)$", original)
-            if not direct_match:
+            derived = derive_xchina_direct_urls(original, total, referer_url=url)
+            if not derived:
                 return album, photo_pages
-
-            prefix = direct_match.group(1)
-            ext = direct_match.group(3)
-            image_pages = [{
-                "page_url": "",
-                "thumb": "",
-                "alt": f"{idx:04d}{ext}",
-                "source": "xchina",
-                "direct_url": f"{prefix}{idx:04d}{ext}",
-                "referer_url": url,
-            } for idx in range(1, total + 1)]
-            return album, image_pages
+            return album, derived
         finally:
             page.close()
 
@@ -139,10 +193,10 @@ class BrowserBridge:
                         """() => {
                             const preload = document.querySelector('link[rel="preload"][as="image"]');
                             if (preload?.href) return preload.href;
-                            const img = document.querySelector('img[src*="img.xchina.io/photos2/"]');
+                            const img = document.querySelector('img[src*="img.xchina.io/photos/"]') || document.querySelector('img[src*="img.xchina.io/photos2/"]');
                             if (img?.src) return img.src;
                             const html = document.documentElement.outerHTML;
-                            const match = html.match(/"contentUrl"\\s*:\\s*"(https:\\\\/\\\\/img\\.xchina\\.io\\\\/photos2\\\\/[^"]+)"/);
+                            const match = html.match(/"contentUrl"\\s*:\\s*"(https:\\\\/\\\\/img\\.xchina\\.io\\\\/photos2?\\\\/[^"]+)"/);
                             if (match) return JSON.parse('"' + match[1] + '"');
                             return null;
                         }"""
@@ -158,7 +212,10 @@ class BrowserBridge:
         page = self._new_page()
         try:
             with page.expect_response(
-                lambda resp: "img.xchina.io/photos2/" in resp.url and resp.request.resource_type == "image",
+                lambda resp: (
+                    ("img.xchina.io/photos/" in resp.url or "img.xchina.io/photos2/" in resp.url)
+                    and resp.request.resource_type == "image"
+                ),
                 timeout=30000,
             ) as image_info:
                 page.goto(photo_page_url, wait_until="networkidle", timeout=30000)
@@ -204,12 +261,11 @@ class BrowserBridge:
         try:
             page.goto("https://imgbb.com/", wait_until="networkidle", timeout=30000)
             page.wait_for_timeout(500)
+            assert self._context is not None, "BrowserBridge 未进入上下文"
             cookies = self._context.cookies(["https://imgbb.com/"])
             cookie_map = {item["name"]: item["value"] for item in cookies}
             cookie = "; ".join(
-                f"{name}={cookie_map[name]}"
-                for name in ("LID", "PHPSESSID")
-                if name in cookie_map
+                f"{name}={cookie_map[name]}" for name in ("LID", "PHPSESSID") if name in cookie_map
             )
             auth_token = page.evaluate(
                 """() => {

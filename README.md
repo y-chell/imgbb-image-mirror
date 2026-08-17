@@ -33,16 +33,19 @@
 
 这个项目不是简单的 `requests.get()` 批量下载。实际跑图片站时会遇到这些问题：
 
-- 源站可能有 Cloudflare，直接用 `httpx` 经常拿到 403 或验证页。
-- 复制浏览器 cookie 给 Python 不一定有用，因为 TLS 指纹也可能被拦。
+- 源站可能有 Cloudflare，直接用普通 HTTP 客户端经常拿到 403 或验证页。
+- 复制浏览器 cookie 给 Python 不一定有用，因为 TLS/JA3 指纹也可能被拦。
 - xchina 的 model 页不是稳定相册列表，稳定入口是 `photos/model-xxx.html`。
 - xchina 原图通常可以从首张图推导出整套 `0001.jpg ~ 00NN.jpg`，比逐张点开更稳。
 - imgbb 上传用的是网页内部接口 `POST https://imgbb.com/json`，不是官方公开 API。
 
-所以项目里保留了两套方式：
+所以抓取层统一用 [`curl_cffi`](https://github.com/lexiforest/curl_cffi) 的
+`impersonate="chrome"`，让 Python 侧的 TLS 指纹与真实 Chrome 一致，从根上
+消除 403 / TLS 握手失败这类问题。HTML 解析用 `parsel` 的 CSS 选择器 +
+JSON-LD 结构化解析，不再依赖脆弱的正则。
 
-- 普通站点：直接用 Python 解析、下载、上传。
-- 麻烦站点：接管你已经登录/通过验证的 Chrome，再在浏览器上下文里取图。
+只有 xchina 这类需要复用浏览器登录态的站点，才会接管你已经登录/通过验证的
+Chrome，在浏览器上下文里取图。
 
 ## 安装
 
@@ -131,30 +134,6 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir="$env:LOCALAPPDATA\Googl
 
 工具会从 Chrome 的 `DevToolsActivePort` 读取连接信息，并复用当前浏览器会话。
 
-## bridge server 备用方案
-
-如果出现这些情况：
-
-- Python 直连源站图片经常 403
-- Python TLS 握手失败，但浏览器或 curl 正常
-- 需要从浏览器上下文取图，再转发给 imgbb
-
-可以启动 `bridge_server.py` 做本地中转：
-
-```powershell
-$env:IMGBB_COOKIE="LID=...; PHPSESSID=..."
-$env:IMGBB_TOKEN="your_auth_token"
-python .\bridge_server.py
-```
-
-流程是：
-
-1. 浏览器侧拿到图片数据
-2. POST 到 `http://127.0.0.1:18888`
-3. 本地脚本调用 `curl` 上传到 imgbb
-
-这是备用方案。默认上传路径仍然是 `imgbb_image_mirror/uploader.py`。
-
 ## 输出文件
 
 默认输出在 `downloads/`：
@@ -178,14 +157,21 @@ python -m pytest
 
 ```text
 imgbb_image_mirror/
-  __main__.py       # CLI 入口
-  downloader.py     # 相册解析、下载、原图地址收集
-  parser.py         # 各站点 HTML 解析
+  __main__.py       # CLI 入口（参数解析 + 配置加载）
+  orchestrator.py   # 镜像/下载编排（队列 worker、续传状态、进度条）
+  adapters.py       # SiteAdapter 插件：xchina / taotu / imgbb 各一套策略
+  downloader.py     # 相册下载编排（站点无关），委托给 adapters
+  parser.py         # 各站点 HTML 解析（parsel 选择器 + JSON-LD）
+  client.py         # 源站抓取客户端（curl_cffi impersonate Chrome）
   uploader.py       # imgbb 上传客户端
-  browser_bridge.py # 连接本机 Chrome 会话
-  metadata.py       # 下载/上传状态文件
+  browser_bridge.py # 连接本机 Chrome 会话 + xchina 直链推导
+  metadata.py      # 下载/上传状态文件（原子写）
 tests/
   test_xchina_support.py
+  test_metadata_and_retry.py
+  test_adapters.py
+  test_derive_direct.py
+  test_orchestrator.py
 ```
 
 ## 说明
