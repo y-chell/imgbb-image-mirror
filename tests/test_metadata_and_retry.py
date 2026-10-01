@@ -139,6 +139,32 @@ class UploadWorkerRetryTests(unittest.TestCase):
         self.assertEqual(item["result"], {"url": "ok"})
         self.assertEqual(uploader.calls, 2)
 
+    def test_circuit_breaker_after_consecutive_failures(self):
+        # 连续多张全部失败 -> 熔断，剩余任务快速失败，不再触碰上传接口
+        uploader = FakeUploader([RuntimeError("boom")])
+        q = queue.Queue()
+        out = queue.Queue()
+        with mock.patch("imgbb_image_mirror.orchestrator.time.sleep"):
+            worker = threading.Thread(
+                target=upload_worker,
+                args=(uploader, "a", q, out),
+                kwargs={"max_retries": 0, "max_consecutive_failures": 3},
+                daemon=True,
+            )
+            worker.start()
+            for idx in range(8):
+                q.put(self._task(idx))
+            q.put(None)
+            worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "worker 超时未退出")
+        results = [out.get_nowait() for _ in range(8)]
+        self.assertEqual(uploader.calls, 3, "熔断后仍应停止调用上传接口")
+        for r in results[:3]:
+            self.assertIsNone(r["result"])
+        for r in results[3:]:
+            self.assertIsNone(r["result"])
+            self.assertIn("限流", r["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

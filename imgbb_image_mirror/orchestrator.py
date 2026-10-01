@@ -196,28 +196,50 @@ def upload_one(uploader, task: dict, album_id: str) -> tuple[dict | None, str]:
     return result, ""
 
 
-def upload_worker(uploader, album_id: str, upload_queue, result_queue, max_retries: int = 2):
+def upload_worker(
+    uploader,
+    album_id: str,
+    upload_queue,
+    result_queue,
+    max_retries: int = 2,
+    abort: threading.Event | None = None,
+    max_consecutive_failures: int = 5,
+):
     """上传 worker，单次运行内对失败图片做带 jitter 的有限次重试。
 
     max_retries 是"额外重试次数"，即总尝试次数 = 1 + max_retries。
+    连续 max_consecutive_failures 张图全部尝试失败时判定为平台限流，
+    置位 abort 并对剩余任务快速失败——重试风暴只会延长封锁窗口，
+    未处理条目保持 pending，下次运行自动续传。
     """
+    abort = abort or threading.Event()
+    consecutive_failures = 0
     while True:
         task = upload_queue.get()
         try:
             if task is None:
                 return
 
-            result = None
-            error = ""
-            attempts = 1 + max(0, max_retries)
-            for attempt in range(attempts):
-                result, error = upload_one(uploader, task, album_id)
-                if result:
-                    break
-                if attempt < attempts - 1:
-                    # 指数退避 + jitter，避免与源站限速周期锁相
-                    backoff = (2**attempt) + random.uniform(0, 1.0)
-                    time.sleep(backoff)
+            if consecutive_failures >= max_consecutive_failures:
+                abort.set()
+                result = None
+                error = "连续多张上传失败，疑似平台限流，本轮跳过"
+            else:
+                result = None
+                error = ""
+                attempts = 1 + max(0, max_retries)
+                for attempt in range(attempts):
+                    result, error = upload_one(uploader, task, album_id)
+                    if result:
+                        consecutive_failures = 0
+                        break
+                    if attempt < attempts - 1:
+                        # 指数退避 + jitter，避免与源站限速周期锁相
+                        backoff = (2**attempt) + random.uniform(0, 1.0)
+                        time.sleep(backoff)
+                if not result:
+                    consecutive_failures += 1
+
             if task.get("file_path") and os.path.exists(task["file_path"]):
                 os.unlink(task["file_path"])
 
@@ -333,7 +355,7 @@ def mirror_albums(client: ImgbbClient, albums: list[dict], cfg, args, browser=No
     results = []
 
     with ImgbbUploader(
-        cookie=cfg.imgbb.cookie, auth_token=cfg.imgbb.auth_token, delay=cfg.delay
+        cookie=cfg.imgbb.cookie, auth_token=cfg.imgbb.auth_token, delay=max(cfg.delay, 2.0)
     ) as uploader:
         with Progress(
             SpinnerColumn(),
@@ -419,9 +441,11 @@ def mirror_albums(client: ImgbbClient, albums: list[dict], cfg, args, browser=No
                 else:
                     upload_queue: queue.Queue = queue.Queue(maxsize=max(1, min(cfg.workers, 3)))
                     result_queue: queue.Queue = queue.Queue()
+                    abort = threading.Event()
                     worker = threading.Thread(
                         target=upload_worker,
                         args=(uploader, new_album_id, upload_queue, result_queue),
+                        kwargs={"abort": abort},
                         daemon=True,
                     )
                     worker.start()
@@ -432,7 +456,11 @@ def mirror_albums(client: ImgbbClient, albums: list[dict], cfg, args, browser=No
                         if metadata["images"][idx].get("status") != "uploaded"
                     ]
 
+                    aborted = False
                     for idx in pending_indices:
+                        if abort.is_set():
+                            aborted = True
+                            break  # 限流熔断：未下载的条目保持 pending，下次运行续传
                         upload_name = upload_names[idx]
                         title = os.path.splitext(upload_name)[0]
                         try:
@@ -488,6 +516,11 @@ def mirror_albums(client: ImgbbClient, albums: list[dict], cfg, args, browser=No
                         failed,
                         block=True,
                     )
+                    if aborted:
+                        logger.warning(
+                            f"疑似平台限流，提前结束 {album_name}: 本轮成功 {success}，"
+                            f"失败 {failed}，未处理 {total - success - failed} 张，重跑本命令续传"
+                        )
 
                     if success == total:
                         save_mirror_album(metadata, state_path, new_album, completed=True)
