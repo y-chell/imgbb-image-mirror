@@ -7,9 +7,11 @@
 - 不支持的站点抛 ValueError
 """
 
+import json
 import unittest
 
 from imgbb_image_mirror.adapters import (
+    FishArchiveAdapter,
     ImgbbAdapter,
     TaotuAdapter,
     XchinaAdapter,
@@ -36,6 +38,11 @@ class AdapterRoutingTests(unittest.TestCase):
         self.assertIsInstance(select_adapter("https://ibb.co/album/abc"), ImgbbAdapter)
         self.assertIsInstance(select_adapter("https://imgbb.com/albums"), ImgbbAdapter)
 
+    def test_route_fisharchive(self):
+        self.assertIsInstance(
+            select_adapter("https://fisharchive.pages.dev/#archive"), FishArchiveAdapter
+        )
+
     def test_route_unknown_returns_none(self):
         self.assertIsNone(select_adapter("https://example.com/whatever"))
 
@@ -54,8 +61,26 @@ class DirectAlbumUrlTests(unittest.TestCase):
     def test_imgbb_album_is_direct(self):
         self.assertTrue(is_direct_album_url("https://ibb.co/album/abc123"))
 
+    def test_fisharchive_is_direct(self):
+        self.assertTrue(is_direct_album_url("https://fisharchive.pages.dev/#archive"))
+
     def test_unknown_is_not_direct(self):
         self.assertFalse(is_direct_album_url("https://example.com/whatever"))
+
+
+FISHARCHIVE_MANIFEST = json.dumps(
+    [
+        {
+            "original": "media/abc.png",
+            "filename": "abc.png",
+            "alt": "鲸鱼娘同人表情包",
+            "preview": "previews/abc.webp",
+            "large": "large/abc.webp",
+            "width": 480,
+            "height": 480,
+        }
+    ]
+)
 
 
 class DummyClient:
@@ -78,6 +103,18 @@ class BuildAlbumTests(unittest.TestCase):
         album = build_album_from_url(client, "https://ibb.co/album/abc123")
         self.assertEqual(album["id"], "abc123")
         self.assertEqual(album["source"], "imgbb")
+
+    def test_fisharchive_collect_image_pages(self):
+        adapter = FishArchiveAdapter()
+        client = DummyClient(FISHARCHIVE_MANIFEST)
+        album = adapter.build_album(client, "https://fisharchive.pages.dev/#archive")
+        self.assertEqual(album["id"], "fisharchive")
+        self.assertEqual(album["name"], "deepseek")
+        pages = adapter.collect_image_pages(client, "https://fisharchive.pages.dev/")
+        self.assertEqual(len(pages), 1)
+        # manifest 里的相对路径必须拼到站点根目录，而不是 stickers/ 下
+        self.assertEqual(pages[0]["direct_url"], "https://fisharchive.pages.dev/media/abc.png")
+        self.assertEqual(pages[0]["thumb"], "https://fisharchive.pages.dev/previews/abc.webp")
 
     def test_build_unknown_raises(self):
         with self.assertRaises(ValueError):

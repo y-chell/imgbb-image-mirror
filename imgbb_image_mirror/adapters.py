@@ -13,6 +13,7 @@ downloader.py 仍然保留 ``scrape_album_list`` / ``download_album`` 等门面
 
 from __future__ import annotations
 
+import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
@@ -269,6 +270,79 @@ class TaotuAdapter(SiteAdapter):
 
 
 # ---------------------------------------------------------------------------
+# fisharchive (fisharchive.pages.dev: DeepSeek 同人表情收藏)
+# ---------------------------------------------------------------------------
+
+
+class FishArchiveAdapter(SiteAdapter):
+    """fisharchive.pages.dev 整站是一个相册，图片清单在 stickers/manifest.json。
+
+    manifest 里的 original/preview/large 是相对站点根目录的路径（不是相对
+    manifest 所在的 stickers/ 目录），拼 URL 时必须以 scheme://netloc/ 为基准。
+    相册名固定为 deepseek（该站内容即 DeepSeek 鲸鱼娘同人表情）。
+    """
+
+    source = "fisharchive"
+
+    def matches(self, url: str) -> bool:
+        return _host_is(url, "fisharchive.pages.dev")
+
+    def is_album_url(self, url: str) -> bool:
+        return self.matches(url)
+
+    @staticmethod
+    def _site_base(url: str) -> str:
+        p = urlparse(url)
+        return f"{p.scheme}://{p.netloc}/"
+
+    def _fetch_manifest(self, client: ImgbbClient, url: str) -> list[dict]:
+        base = self._site_base(url)
+        return json.loads(client.fetch(base + "stickers/manifest.json"))
+
+    def build_album(self, client: ImgbbClient, url: str, browser=None) -> dict:
+        stickers = self._fetch_manifest(client, url)
+        return {
+            "id": "fisharchive",
+            "name": "deepseek",
+            "url": self._site_base(url),
+            "thumb": "",
+            "count": len(stickers),
+            "source": self.source,
+        }
+
+    def scrape_albums(
+        self, client: ImgbbClient, url: str, max_pages: int = 100, browser=None
+    ) -> list[dict]:
+        # 整站只有一个相册，列表翻页语义不适用
+        return []
+
+    def collect_image_pages(self, client: ImgbbClient, album_url: str, browser=None) -> list[dict]:
+        base = self._site_base(album_url)
+        stickers = self._fetch_manifest(client, album_url)
+        return [
+            {
+                "page_url": "",
+                "thumb": base + s["preview"] if s.get("preview") else "",
+                "alt": s.get("filename", ""),
+                "source": self.source,
+                "direct_url": base + s["original"],
+            }
+            for s in stickers
+            if s.get("original")
+        ]
+
+    def resolve_originals(
+        self, client: ImgbbClient, image_pages: list[dict], workers: int = 4, browser=None
+    ) -> list[str]:
+        return [img.get("direct_url", "") for img in image_pages]
+
+    def download_one(
+        self, client: ImgbbClient, image_page: dict, dest: str, album: dict, browser=None
+    ) -> bool:
+        return client.download(image_page.get("direct_url", ""), dest)
+
+
+# ---------------------------------------------------------------------------
 # imgbb
 # ---------------------------------------------------------------------------
 
@@ -361,10 +435,11 @@ class ImgbbAdapter(SiteAdapter):
 # 路由
 # ---------------------------------------------------------------------------
 
-# 顺序敏感：xchina / taotu 先于 imgbb（imgbb 的 matches 较宽）
+# 顺序敏感：xchina / taotu / fisharchive 先于 imgbb（imgbb 的 matches 较宽）
 _ADAPTERS: list[SiteAdapter] = [
     XchinaAdapter(),
     TaotuAdapter(),
+    FishArchiveAdapter(),
     ImgbbAdapter(),
 ]
 

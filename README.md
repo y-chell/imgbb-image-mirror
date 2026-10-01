@@ -9,6 +9,7 @@
 - imgbb 相册
 - xchina 相册/模特页
 - taotu 相册页
+- fisharchive（fisharchive.pages.dev，DeepSeek 同人表情收藏，整站一个相册）
 
 ## Demo
 
@@ -157,6 +158,7 @@ imgbb-image-mirror "https://ibb.co/album/xxxx" --album-id xxxx
 - xchina 单相册：`https://xchina.co/photo/id-xxx.html`
 - taotu 相册：`https://taotu.org/cosplay/.../`
 - imgbb 相册：`https://ibb.co/album/xxxx`
+- fisharchive 整站：`https://fisharchive.pages.dev/`
 
 ## Chrome 远程调试
 
