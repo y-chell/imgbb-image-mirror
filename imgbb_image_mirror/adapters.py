@@ -113,6 +113,15 @@ class SiteAdapter:
 # ---------------------------------------------------------------------------
 
 
+def _xchina_canonical_album_url(url: str) -> str:
+    """去掉相册/series 的分页后缀：/photo/id-x/7.html -> /photo/id-x.html。
+
+    相册 ID、state 文件名都以首页 URL 为准，否则带页码的 ID 会把
+    state 文件写进嵌套目录，且下次用干净 URL 会重复上传整套。
+    """
+    return re.sub(r"(/(?:photo/id|photos/series)-[^./]+)/\d+\.html$", r"\1.html", url)
+
+
 def _xchina_album_id(url: str) -> str:
     m = re.search(r"/photo/id-([^.]+)\.html", url)
     if not m:
@@ -158,6 +167,7 @@ class XchinaAdapter(SiteAdapter):
         )
 
     def build_album(self, client: ImgbbClient, url: str, browser=None) -> dict:
+        url = _xchina_canonical_album_url(url)
         if self.is_album_url(url) and browser:
             album, _ = browser.extract_xchina_manifest(url)
             return album
@@ -196,6 +206,7 @@ class XchinaAdapter(SiteAdapter):
         return all_albums
 
     def collect_image_pages(self, client: ImgbbClient, album_url: str, browser=None) -> list[dict]:
+        album_url = _xchina_canonical_album_url(album_url)
         if browser and not _xchina_series_url_id(album_url):
             _, photo_pages = browser.extract_xchina_manifest(album_url)
             return photo_pages

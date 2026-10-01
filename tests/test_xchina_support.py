@@ -4,6 +4,7 @@ from unittest import mock
 from imgbb_image_mirror.adapters import (
     XchinaAdapter,
     _xchina_album_id,
+    _xchina_canonical_album_url,
     xchina_download_headers,
 )
 from imgbb_image_mirror.downloader import (
@@ -536,6 +537,23 @@ class XchinaSeriesTests(unittest.TestCase):
         self.assertEqual(
             _xchina_album_id("https://xchina.co/photos/series-665f8bafab4bc.html"),
             "665f8bafab4bc",
+        )
+
+    def test_paginated_album_url_canonicalized(self):
+        # 带分页后缀的相册 URL 要归一化，否则相册 ID 含斜杠、state 文件进嵌套目录
+        paginated = "https://xchina.co/photo/id-6a05a09c9bcd7/7.html"
+        self.assertTrue(XchinaAdapter().is_album_url(paginated))
+        self.assertEqual(
+            _xchina_canonical_album_url(paginated),
+            "https://xchina.co/photo/id-6a05a09c9bcd7.html",
+        )
+        self.assertEqual(
+            _xchina_canonical_album_url("https://xchina.co/photos/series-665f8bafab4bc/3.html"),
+            "https://xchina.co/photos/series-665f8bafab4bc.html",
+        )
+        self.assertEqual(
+            _xchina_album_id("https://xchina.co/photo/id-6a05a09c9bcd7.html"),
+            "6a05a09c9bcd7",
         )
 
     def test_collect_series_subpages_merges_pages(self):

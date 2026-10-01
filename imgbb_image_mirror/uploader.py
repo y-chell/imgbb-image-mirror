@@ -67,7 +67,12 @@ class ImgbbUploader:
                 timeout=60,
                 allow_redirects=True,
             )
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except Exception as exc:
+            # HTTP 层错误也要带上响应体：imgbb 的限流/校验原因都在 body 里
+            body = (resp.text or "").strip()[:300]
+            raise RuntimeError(f"HTTP {resp.status_code}: {body or 'no body'}") from exc
         return resp.json()
 
     def _post_json(self, data: dict, mime: CurlMime | None = None) -> dict:
