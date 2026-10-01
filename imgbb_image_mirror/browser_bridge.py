@@ -146,7 +146,9 @@ class BrowserBridge:
     def extract_xchina_album(self, url: str) -> tuple[dict, list[dict]]:
         html = self.fetch_html(url)
         photo_pages = parse_xchina_photo_pages(html, url)
-        album_id_match = re.search(r"/photo/id-([^.]+)\.html", url)
+        album_id_match = re.search(r"/photo/id-([^.]+)\.html", url) or re.search(
+            r"/photos/series-([^.]+)\.html", url
+        )
         album_id = album_id_match.group(1) if album_id_match else ""
         album = {
             "id": album_id,
@@ -160,7 +162,8 @@ class BrowserBridge:
 
     def extract_xchina_manifest(self, url: str) -> tuple[dict, list[dict]]:
         album, photo_pages = self.extract_xchina_album(url)
-        if not photo_pages:
+        if not photo_pages or photo_pages[0].get("direct_url"):
+            # 空相册或 series 页（条目已带推导直链），无需逐页解析原图
             return album, photo_pages
 
         page = self._new_page()

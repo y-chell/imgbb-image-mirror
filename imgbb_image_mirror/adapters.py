@@ -115,7 +115,15 @@ class SiteAdapter:
 
 def _xchina_album_id(url: str) -> str:
     m = re.search(r"/photo/id-([^.]+)\.html", url)
+    if not m:
+        m = re.search(r"/photos/series-([^.]+)\.html", url)
     return m.group(1) if m else ""
+
+
+def _xchina_series_url_id(url: str) -> str | None:
+    """series 相册（2026 改版新模板）返回其 id，其余 URL 返回 None。"""
+    m = re.search(r"/photos/series-([^.]+)\.html", url)
+    return m.group(1) if m else None
 
 
 def _xchina_model_listing_url(url: str) -> str:
@@ -144,7 +152,10 @@ class XchinaAdapter(SiteAdapter):
         return _host_is(url, "xchina.co")
 
     def is_album_url(self, url: str) -> bool:
-        return _host_is(url, "xchina.co") and re.search(r"/photo/id-[^.]+\.html", url) is not None
+        return _host_is(url, "xchina.co") and (
+            re.search(r"/photo/id-[^.]+\.html", url) is not None
+            or _xchina_series_url_id(url) is not None
+        )
 
     def build_album(self, client: ImgbbClient, url: str, browser=None) -> dict:
         if self.is_album_url(url) and browser:
@@ -185,11 +196,41 @@ class XchinaAdapter(SiteAdapter):
         return all_albums
 
     def collect_image_pages(self, client: ImgbbClient, album_url: str, browser=None) -> list[dict]:
-        if browser:
+        if browser and not _xchina_series_url_id(album_url):
             _, photo_pages = browser.extract_xchina_manifest(album_url)
             return photo_pages
-        html = client.fetch(album_url)
-        return parse_xchina_photo_pages(html, album_url)
+        fetch = browser.fetch_html if browser else client.fetch
+        html = fetch(album_url)
+        entries = parse_xchina_photo_pages(html, album_url)
+        if entries and not entries[0].get("direct_url"):
+            return entries  # 旧模板：photoShow 链接一次拿全
+        return self._collect_series_subpages(fetch, html, album_url, entries)
+
+    def _collect_series_subpages(
+        self, fetch, first_html: str, album_url: str, entries: list[dict]
+    ) -> list[dict]:
+        """series 相册内容分页（/photos/series-{id}/{n}.html），逐页收集去重。
+
+        每页只内嵌十几张预览图，原图不在任何页面 HTML 里，只能逐条从预览
+        URL 推导；分页总数取自页面上出现的最大页码。
+        """
+        sid = _xchina_series_url_id(album_url)
+        if not sid:
+            return entries
+        collected = list(entries)
+        seen = {e["direct_url"] for e in collected if e.get("direct_url")}
+        parsed = urlparse(album_url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        page_nums = {
+            int(n) for n in re.findall(rf"/photos/series-{sid}/(\d+)\.html", first_html)
+        }
+        for n in sorted(p for p in page_nums if p > 1):
+            html = fetch(f"{base}/photos/series-{sid}/{n}.html")
+            for entry in parse_xchina_photo_pages(html, album_url):
+                if entry["direct_url"] not in seen:
+                    seen.add(entry["direct_url"])
+                    collected.append(entry)
+        return collected
 
     def resolve_originals(
         self, client: ImgbbClient, image_pages: list[dict], workers: int = 4, browser=None

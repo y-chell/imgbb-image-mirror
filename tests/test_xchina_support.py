@@ -1,7 +1,11 @@
 import unittest
 from unittest import mock
 
-from imgbb_image_mirror.adapters import xchina_download_headers
+from imgbb_image_mirror.adapters import (
+    XchinaAdapter,
+    _xchina_album_id,
+    xchina_download_headers,
+)
 from imgbb_image_mirror.downloader import (
     build_album_from_url,
     collect_image_pages,
@@ -474,6 +478,78 @@ class XChinaParserTests(unittest.TestCase):
                 "https://img.xchina.io/photos2/a/0002.jpg",
             ],
         )
+
+
+SERIES_PAGE_HTML = """
+<html><body>
+<div class="content-box series">
+<a href="javascript:void(0)" title="黄甫" data-video-url="https://img.xchina.io/photos/abc/0001.mp4" class="video-collection-trigger"><div role="img" class="img" style="background-image:url('https://img.xchina.io/photos/abc/0001_600x0.webp');aspect-ratio:0.5;"></div></a>
+<a href="javascript:void(0)" title="黄甫"><div role="img" class="img" style="background-image:url('https://img.xchina.io/photos/set1/00002_600x0.webp');"></div></a>
+<a href="javascript:void(0)" title="黄甫"><div role="img" class="img" style="background-image:url('https://img.xchina.io/photos/set2/00007_600x0.webp');"></div></a>
+<a href="javascript:void(0)" title="黄甫"><div role="img" class="img" style="background-image:url('https://img.xchina.io/photos/set1/00002_600x0.webp');"></div></a>
+</div>
+<a href="/photos/series-665f8bafab4bc/2.html">2</a>
+</body></html>
+"""
+
+SERIES_PAGE2_HTML = """
+<a href="javascript:void(0)" title="黄甫"><div role="img" class="img" style="background-image:url('https://img.xchina.io/photos/set3/00009_600x0.webp');"></div></a>
+"""
+
+SERIES_LISTING_HTML = """
+<div class="content-box series">
+<a href="/photos/series-665f8bafab4bc.html"><div class="sub">黄甫 (163)</div></a>
+<a href="/photos/series-6310ce9b90056.html"><div class="sub">PANS (2700)</div></a>
+</div>
+"""
+
+
+class XchinaSeriesTests(unittest.TestCase):
+    BASE = "https://xchina.co/photos/series-665f8bafab4bc.html"
+
+    def test_parse_series_photo_pages_derives_direct_urls(self):
+        # 视频条目跳过 + 跨条目重复去重 -> 2 条；原图按同目录同名 .jpg 推导
+        entries = parse_xchina_photo_pages(SERIES_PAGE_HTML, self.BASE)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["direct_url"], "https://img.xchina.io/photos/set1/00002.jpg")
+        self.assertEqual(entries[1]["direct_url"], "https://img.xchina.io/photos/set2/00007.jpg")
+        self.assertEqual(entries[0]["thumb"], "https://img.xchina.io/photos/set1/00002_600x0.webp")
+        self.assertEqual(entries[0]["page_url"], "")
+        self.assertEqual(entries[0]["referer_url"], self.BASE)
+        self.assertEqual(entries[0]["source"], "xchina")
+
+    def test_parse_series_listing_cards(self):
+        albums = parse_xchina_albums_from_page(
+            SERIES_LISTING_HTML, "https://xchina.co/photos/model-x.html"
+        )
+        self.assertEqual(len(albums), 2)
+        self.assertEqual(albums[0]["id"], "665f8bafab4bc")
+        self.assertEqual(albums[0]["name"], "黄甫")
+        self.assertEqual(albums[0]["count"], 163)
+        self.assertEqual(albums[0]["url"], self.BASE)
+        self.assertEqual(albums[0]["source"], "xchina")
+
+    def test_series_url_routing(self):
+        adapter = XchinaAdapter()
+        self.assertTrue(adapter.is_album_url(self.BASE))
+        self.assertFalse(adapter.is_album_url("https://xchina.co/photos/model-x.html"))
+        self.assertEqual(
+            _xchina_album_id("https://xchina.co/photos/series-665f8bafab4bc.html"),
+            "665f8bafab4bc",
+        )
+
+    def test_collect_series_subpages_merges_pages(self):
+        adapter = XchinaAdapter()
+        first_entries = parse_xchina_photo_pages(SERIES_PAGE_HTML, self.BASE)
+        self.assertEqual(len(first_entries), 2)
+
+        def fake_fetch(url):
+            self.assertEqual(url, "https://xchina.co/photos/series-665f8bafab4bc/2.html")
+            return SERIES_PAGE2_HTML
+
+        merged = adapter._collect_series_subpages(fake_fetch, SERIES_PAGE_HTML, self.BASE, first_entries)
+        self.assertEqual(len(merged), 3)
+        self.assertEqual(merged[-1]["direct_url"], "https://img.xchina.io/photos/set3/00009.jpg")
 
 
 if __name__ == "__main__":

@@ -128,6 +128,9 @@ def parse_xchina_albums_from_page(html: str, base_url: str) -> list[dict]:
 
     缩略图是 CSS 背景图（``background-image:url('...')``），选择器取不到
     属性值，这里对 style 字符串做一次正则。
+
+    2026 改版后列表内容重组为 series 卡片（``/photos/series-*.html``），
+    旧版 photo 卡片不存在时按 series 卡片解析，一个 series 就是一个相册。
     """
     sel = Selector(html)
     albums = []
@@ -160,23 +163,77 @@ def parse_xchina_albums_from_page(html: str, base_url: str) -> list[dict]:
                 "source": "xchina",
             }
         )
+    if albums:
+        return albums
+
+    for card in sel.css('a[href*="/photos/series-"]'):
+        href = card.attrib.get("href", "")
+        series_id_match = re.search(r"/photos/series-([^.]+)\.html", href)
+        if not series_id_match:
+            continue
+        text = _clean_text(" ".join(card.css("::text").getall()))
+        count_match = re.search(r"\((\d+)\)\s*$", text)
+        name = re.sub(r"\s*\(\d+\)\s*$", "", text).strip()
+        albums.append(
+            {
+                "id": series_id_match.group(1),
+                "name": name or series_id_match.group(1),
+                "url": urljoin(base_url, href),
+                "thumb": "",
+                "count": int(count_match.group(1)) if count_match else 0,
+                "source": "xchina",
+            }
+        )
     return albums
 
 
 def parse_xchina_photo_pages(html: str, base_url: str) -> list[dict]:
-    """xchina 相册详情页：收集 photoShow 跳转链接，去重保序。"""
+    """xchina 相册页：收集图片条目，去重保序。
+
+    旧模板返回 page_url 条目（photoShow 跳转链接），由调用方逐页解析原图；
+    2026 改版后的 series 页把预览图（``NNNN_600x0.webp``）内嵌在条目
+    style 里，原图按同目录同名 ``.jpg`` 推导，直接返回 direct_url 条目，
+    省去逐页解析；视频条目（data-video-url）imgbb 托管不了，跳过。
+    """
     sel = Selector(html)
     raw_links = sel.css("a::attr(href)").re(r"/photoShow\.html\?id=[^\"']+")
-    links = _dedupe_keep_order(raw_links)
-    return [
-        {
-            "page_url": urljoin(base_url, href),
-            "thumb": "",
-            "alt": "",
-            "source": "xchina",
-        }
-        for href in links
-    ]
+    if raw_links:
+        links = _dedupe_keep_order(raw_links)
+        return [
+            {
+                "page_url": urljoin(base_url, href),
+                "thumb": "",
+                "alt": "",
+                "source": "xchina",
+            }
+            for href in links
+        ]
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for a in sel.xpath('//a[div[contains(@style, "_600x0.webp")]]'):
+        if a.attrib.get("data-video-url"):
+            continue
+        style = a.css("div.img::attr(style)").get() or ""
+        thumb_match = re.search(r"background-image:url\('([^']+)_600x0\.webp'\)", style)
+        if not thumb_match:
+            continue
+        direct_url = thumb_match.group(1) + ".jpg"
+        thumb = thumb_match.group(1) + "_600x0.webp"
+        if direct_url in seen:
+            continue
+        seen.add(direct_url)
+        entries.append(
+            {
+                "page_url": "",
+                "thumb": thumb,
+                "alt": os.path.basename(direct_url),
+                "source": "xchina",
+                "direct_url": direct_url,
+                "referer_url": base_url,
+            }
+        )
+    return entries
 
 
 def parse_taotu_image_pages(html: str, base_url: str) -> list[dict]:
