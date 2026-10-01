@@ -41,9 +41,9 @@ class FakeSession:
         pass
 
 
-def _make_uploader(responses) -> tuple[ImgbbUploader, FakeSession]:
+def _make_uploader(responses, proxy: str = "") -> tuple[ImgbbUploader, FakeSession]:
     session = FakeSession(responses)
-    uploader = ImgbbUploader(cookie="c=1", auth_token="tok", delay=0)
+    uploader = ImgbbUploader(cookie="c=1", auth_token="tok", delay=0, proxy=proxy)
     uploader._session = session
     return uploader, session
 
@@ -73,6 +73,12 @@ class PostJsonErrorTests(unittest.TestCase):
         payload = {"status_code": 200, "image": {"url": "https://i.ibb.co/x.jpg"}}
         uploader, _ = _make_uploader([FakeResponse(payload)])
         self.assertEqual(uploader._post_json({"action": "upload"}), payload)
+
+    def test_proxy_param_accepted(self):
+        # proxy 参数用于上传走独立出口（本机网络被图床风控时绕开）
+        uploader = ImgbbUploader(cookie="c=1", auth_token="tok", delay=0, proxy="http://127.0.0.1:20899")
+        self.assertIsNotNone(uploader._session)
+        uploader.close()
 
     def test_token_expired_refreshes_and_retries(self):
         first = FakeResponse(

@@ -76,6 +76,9 @@ def main():
     parser.add_argument("--imgbb-cookie", help="imgbb 登录 cookie")
     parser.add_argument("--imgbb-token", help="imgbb auth_token (可选，自动获取)")
     parser.add_argument("--quiet", "-q", action="store_true", help="安静模式")
+    parser.add_argument(
+        "--proxy", help="imgbb 上传走指定代理（http/socks5，如 http://127.0.0.1:20899）"
+    )
     parser.add_argument("--config", "-c", help="配置文件路径")
     args = parser.parse_args()
 
@@ -95,6 +98,8 @@ def main():
         cfg.imgbb.cookie = args.imgbb_cookie
     if args.imgbb_token:
         cfg.imgbb.auth_token = args.imgbb_token
+    if args.proxy:
+        cfg.proxy = args.proxy
 
     # workers <= 0 会让下载线程池直接抛 ValueError，在入口统一校验
     if cfg.workers < 1:

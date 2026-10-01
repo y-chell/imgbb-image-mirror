@@ -33,6 +33,7 @@ class Config:
     workers: int = 4
     delay: float = 0.5
     max_pages: int = 100
+    proxy: str = ""
     imgbb: ImgbbConfig = field(default_factory=ImgbbConfig)
 
 

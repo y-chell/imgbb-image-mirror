@@ -355,7 +355,10 @@ def mirror_albums(client: ImgbbClient, albums: list[dict], cfg, args, browser=No
     results = []
 
     with ImgbbUploader(
-        cookie=cfg.imgbb.cookie, auth_token=cfg.imgbb.auth_token, delay=max(cfg.delay, 2.0)
+        cookie=cfg.imgbb.cookie,
+        auth_token=cfg.imgbb.auth_token,
+        delay=max(cfg.delay, 2.0),
+        proxy=cfg.proxy,
     ) as uploader:
         with Progress(
             SpinnerColumn(),

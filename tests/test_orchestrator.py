@@ -33,6 +33,7 @@ class FakeConfig:
     def __init__(self, output, cookie="LID=x; PHPSESSID=y", token="abc123"):
         self.output = output
         self.workers = 2
+        self.proxy = ""
         self.delay = 0.01
         self.max_pages = 1
         self.imgbb = mock.MagicMock()

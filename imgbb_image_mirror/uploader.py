@@ -17,13 +17,18 @@ class ImgbbUploader:
     用 curl_cffi impersonate Chrome，避免 httpx 在 imgbb 上的 TLS 问题。
     """
 
-    def __init__(self, cookie: str, auth_token: str = "", delay: float = 1.0):
+    def __init__(
+        self, cookie: str, auth_token: str = "", delay: float = 1.0, proxy: str = ""
+    ):
         self._cookie = cookie
         self._auth_token = auth_token
         self._delay = delay
         self._last_request = 0.0
         self._lock = Lock()
-        self._session: cffi_requests.Session = cffi_requests.Session(impersonate="chrome")
+        # proxy 用于上传走独立出口：本机默认网络被图床风控时可指定代理绕开
+        self._session: cffi_requests.Session = cffi_requests.Session(
+            impersonate="chrome", proxy=proxy or None
+        )
         # UA 一律用 impersonate 自带头，手动写死版本会与 TLS 指纹错配（可检测特征）
         self._session.headers.update({"Cookie": cookie})
         if not self._auth_token:
