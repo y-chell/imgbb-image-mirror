@@ -1,10 +1,10 @@
 import unittest
 from unittest import mock
 
+from imgbb_image_mirror.adapters import xchina_download_headers
 from imgbb_image_mirror.downloader import (
     build_album_from_url,
     collect_image_pages,
-    get_download_headers,
     scrape_album_list,
 )
 from imgbb_image_mirror.orchestrator import (
@@ -256,7 +256,7 @@ class XChinaParserTests(unittest.TestCase):
             "https://img.xchina.io/photos2/69d0cc66ab1f7/0001.jpg",
         )
         self.assertEqual(
-            get_download_headers("https://img.xchina.io/photos2/69d0cc66ab1f7/0001.jpg"),
+            xchina_download_headers("https://img.xchina.io/photos2/69d0cc66ab1f7/0001.jpg"),
             {"Referer": "https://xchina.co/"},
         )
 
@@ -269,7 +269,7 @@ class XChinaParserTests(unittest.TestCase):
         )
         # referer 过滤对 photos/ 原图路径也要生效
         self.assertEqual(
-            get_download_headers("https://img.xchina.io/photos/6a81abdbc0206/00001.jpg"),
+            xchina_download_headers("https://img.xchina.io/photos/6a81abdbc0206/00001.jpg"),
             {"Referer": "https://xchina.co/"},
         )
 

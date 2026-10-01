@@ -36,6 +36,13 @@ from .parser import (
 XCHINA_IMAGE_REFERER = "https://xchina.co/"
 
 
+def xchina_download_headers(url: str) -> dict | None:
+    """img.xchina.io 的图（含 photos2 缩略图 CDN）必须带站内 Referer，否则 403。"""
+    if "img.xchina.io/photos" in url:
+        return {"Referer": XCHINA_IMAGE_REFERER}
+    return None
+
+
 def _host_is(url: str, host: str) -> bool:
     """精确匹配 host 本身或其子域，不做子串匹配（避免 evil-xchina.com 误路由）。"""
     hostname = urlparse(url).hostname or ""
@@ -205,13 +212,7 @@ class XchinaAdapter(SiteAdapter):
         if not browser:
             # xchina 需要 referer，无 browser 时尝试直连
             url = image_page.get("direct_url") or image_page.get("page_url", "")
-            return client.download(
-                url,
-                dest,
-                headers={"Referer": XCHINA_IMAGE_REFERER}
-                if "img.xchina.io/photos" in url
-                else None,
-            )
+            return client.download(url, dest, headers=xchina_download_headers(url))
         try:
             if image_page.get("direct_url"):
                 browser.download_xchina_direct(

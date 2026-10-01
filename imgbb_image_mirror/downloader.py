@@ -14,7 +14,7 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .adapters import XCHINA_IMAGE_REFERER, SiteAdapter, XchinaAdapter, select_adapter
+from .adapters import SiteAdapter, XchinaAdapter, select_adapter
 from .client import ImgbbClient
 from .metadata import (
     add_image_entry,
@@ -32,7 +32,6 @@ __all__ = [
     "resolve_original_urls",
     "is_direct_album_url",
     "build_album_from_url",
-    "get_download_headers",
 ]
 
 logger = logging.getLogger(__name__)
@@ -48,12 +47,6 @@ def build_album_from_url(client: ImgbbClient, url: str, browser=None) -> dict:
     if adapter is None:
         raise ValueError(f"不支持的站点: {url}")
     return adapter.build_album(client, url, browser=browser)
-
-
-def get_download_headers(url: str) -> dict | None:
-    if "img.xchina.io/photos" in url:
-        return {"Referer": XCHINA_IMAGE_REFERER}
-    return None
 
 
 def scrape_album_list(
@@ -141,13 +134,11 @@ def download_album(
     output_dir: str,
     source_url: str = "",
     workers: int = 4,
-    thumb_only: bool = False,
     progress_cb=None,
     browser=None,
 ) -> dict:
     """下载单个相册的图片。
 
-    thumb_only: True 时只下载缩略图。
     progress_cb: 可选回调 (event, **kwargs)，用于 rich 进度条集成。
     """
     name = re.sub(r'[<>:"/\\|?*]', "_", album["name"]).strip()
@@ -177,11 +168,7 @@ def download_album(
         meta = create_metadata(album, source_url)
 
     # 获取下载链接
-    if thumb_only:
-        original_urls = [img.get("thumb", "") for img in image_pages]
-        logger.info(f"  缩略图模式: {total} 张")
-    else:
-        original_urls = resolve_original_urls(client, image_pages, workers, browser=browser)
+    original_urls = resolve_original_urls(client, image_pages, workers, browser=browser)
 
     # 构建文件名
     filenames = _resolve_filenames(image_pages, original_urls)

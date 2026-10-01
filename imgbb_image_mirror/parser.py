@@ -23,6 +23,12 @@ def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", unescape(text)).strip()
 
 
+def _page_title(sel: Selector) -> str | None:
+    """页面标题：优先 og:title meta，其次 <title> 文本。"""
+    title = sel.css('meta[property="og:title"]::attr(content)').get()
+    return title or sel.css("title::text").get()
+
+
 def parse_albums_from_page(html: str) -> list[dict]:
     """imgbb 相册列表页：从 ``data-type="album"`` 卡片里取相册信息。"""
     sel = Selector(html)
@@ -67,9 +73,6 @@ def parse_next_page_url(html: str, base_url: str) -> str | None:
 
     href = sel.css('[data-pagination="next"]::attr(href)').get()
     if not href:
-        # 属性书写顺序不固定，两种都试
-        href = sel.css('a[data-pagination="next"]::attr(href)').get()
-    if not href:
         href = sel.css('a.next::attr(href), a[class*="next"]::attr(href)').get()
 
     if not href:
@@ -91,13 +94,7 @@ def parse_album_name(html: str) -> str | None:
 
 
 def _dedupe_keep_order(values: list[str]) -> list[str]:
-    seen = set()
-    results = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            results.append(value)
-    return results
+    return list(dict.fromkeys(values))
 
 
 def _clean_xchina_album_title(text: str) -> str:
@@ -119,9 +116,7 @@ def _clean_xchina_album_title(text: str) -> str:
 
 def parse_taotu_album_name(html: str) -> str | None:
     sel = Selector(html)
-    title = sel.css('meta[property="og:title"]::attr(content)').get()
-    if not title:
-        title = sel.css("title::text").get()
+    title = _page_title(sel)
     if not title:
         return None
     title = _clean_text(title)
@@ -213,15 +208,13 @@ def parse_taotu_image_pages(html: str, base_url: str) -> list[dict]:
 
 def parse_xchina_album_name(html: str) -> str | None:
     sel = Selector(html)
-    title = sel.css('meta[property="og:title"]::attr(content)').get()
-    if not title:
-        title = sel.css("title::text").get()
+    title = _page_title(sel)
     if not title:
         return None
     return _clean_xchina_album_title(title)
 
 
-def _extract_json_ld_image_urls(html: str) -> list[str]:
+def _extract_json_ld_image_urls(sel: Selector) -> list[str]:
     """从所有 JSON-LD 块里提取 contentUrl，返回按出现顺序的列表。
 
     优先结构化解析；只有当某个块本身不是合法 JSON 时才回退到正则。
@@ -230,7 +223,6 @@ def _extract_json_ld_image_urls(html: str) -> list[str]:
     缩略图用 ``img.xchina.io/photos2/{cdn_id}/NNNN_600x0.webp``。contentUrl
     指向的是原图（photos/），但这里两个前缀都接受，避免漏取。
     """
-    sel = Selector(html)
     urls: list[str] = []
     for block in sel.css('script[type="application/ld+json"]::text').getall():
         text = block.strip()
@@ -283,7 +275,7 @@ def parse_xchina_original_url(html: str) -> str | None:
     if preload:
         return preload
 
-    json_ld_urls = _extract_json_ld_image_urls(html)
+    json_ld_urls = _extract_json_ld_image_urls(sel)
     if json_ld_urls:
         return json_ld_urls[0]
 
