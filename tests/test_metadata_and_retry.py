@@ -55,7 +55,7 @@ class AtomicWriteTests(unittest.TestCase):
 
 
 class FakeUploader:
-    """记录每次 upload_image 的调用次数与返回值序列。"""
+    """记录每次 upload_image 的调用次数与返回值序列。预设用尽后抛错（新契约：失败抛异常）。"""
 
     def __init__(self, results):
         self._results = list(results)
@@ -68,7 +68,7 @@ class FakeUploader:
             if isinstance(r, Exception):
                 raise r
             return r
-        return None
+        raise RuntimeError("upload returned empty")
 
 
 class UploadWorkerRetryTests(unittest.TestCase):
@@ -132,11 +132,12 @@ class UploadWorkerRetryTests(unittest.TestCase):
         self.assertIn("boom", item["error"])
         self.assertEqual(uploader.calls, 3)
 
-    def test_empty_result_is_retried(self):
-        # upload_image 返回 None 视为失败，应重试
-        uploader = FakeUploader([None, None, {"url": "ok"}])
+    def test_empty_url_result_is_retried(self):
+        # imgbb 偶发 HTTP 200 但缺图片载荷：upload_one 把空 url 视为失败，应重试
+        uploader = FakeUploader([{"url": ""}, {"url": "ok"}])
         item = self._run_worker(uploader, self._task())
         self.assertEqual(item["result"], {"url": "ok"})
+        self.assertEqual(uploader.calls, 2)
 
 
 if __name__ == "__main__":

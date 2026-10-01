@@ -37,7 +37,9 @@ XCHINA_IMAGE_REFERER = "https://xchina.co/"
 
 
 def _host_is(url: str, host: str) -> bool:
-    return host in urlparse(url).netloc
+    """精确匹配 host 本身或其子域，不做子串匹配（避免 evil-xchina.com 误路由）。"""
+    hostname = urlparse(url).hostname or ""
+    return hostname == host or hostname.endswith("." + host)
 
 
 class SiteAdapter:
@@ -70,6 +72,27 @@ class SiteAdapter:
     def resolve_originals(
         self, client: ImgbbClient, image_pages: list[dict], workers: int = 4, browser=None
     ) -> list[str]:
+        raise NotImplementedError
+
+    def _resolve_with_pool(
+        self, client: ImgbbClient, image_pages: list[dict], workers: int
+    ) -> list[str]:
+        """并发逐页解析原图（子类实现 _resolve_one），失败条目回退缩略图。"""
+        total = len(image_pages)
+        urls: list[str | None] = [None] * total
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_map = {
+                pool.submit(self._resolve_one, client, img): i for i, img in enumerate(image_pages)
+            }
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                try:
+                    urls[idx] = future.result()
+                except Exception:
+                    urls[idx] = None
+        return [u or image_pages[i].get("thumb", "") for i, u in enumerate(urls)]
+
+    def _resolve_one(self, client: ImgbbClient, img: dict) -> str | None:
         raise NotImplementedError
 
     def download_one(
@@ -164,25 +187,13 @@ class XchinaAdapter(SiteAdapter):
     def resolve_originals(
         self, client: ImgbbClient, image_pages: list[dict], workers: int = 4, browser=None
     ) -> list[str]:
-        total = len(image_pages)
-        urls: list[str | None] = [None] * total
         if image_pages and image_pages[0].get("direct_url"):
             return [str(img["direct_url"]) for img in image_pages]
         if browser:
             resolved = browser.resolve_xchina_originals(image_pages)
             return [u or image_pages[i].get("thumb", "") for i, u in enumerate(resolved)]
         # 无 browser 时退回 client 逐页解析
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_map = {
-                pool.submit(self._resolve_one, client, img): i for i, img in enumerate(image_pages)
-            }
-            for future in as_completed(future_map):
-                idx = future_map[future]
-                try:
-                    urls[idx] = future.result()
-                except Exception:
-                    urls[idx] = None
-        return [u or image_pages[i].get("thumb", "") for i, u in enumerate(urls)]
+        return self._resolve_with_pool(client, image_pages, workers)
 
     def _resolve_one(self, client: ImgbbClient, img: dict) -> str | None:
         html = client.fetch(img["page_url"])
@@ -351,8 +362,7 @@ class ImgbbAdapter(SiteAdapter):
     source = "imgbb"
 
     def matches(self, url: str) -> bool:
-        p = urlparse(url)
-        return "ibb.co" in p.netloc or "imgbb.com" in p.netloc
+        return _host_is(url, "ibb.co") or _host_is(url, "imgbb.com")
 
     def is_album_url(self, url: str) -> bool:
         return "/album/" in urlparse(url).path
@@ -407,19 +417,7 @@ class ImgbbAdapter(SiteAdapter):
     def resolve_originals(
         self, client: ImgbbClient, image_pages: list[dict], workers: int = 4, browser=None
     ) -> list[str]:
-        total = len(image_pages)
-        urls: list[str | None] = [None] * total
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_map = {
-                pool.submit(self._resolve_one, client, img): i for i, img in enumerate(image_pages)
-            }
-            for future in as_completed(future_map):
-                idx = future_map[future]
-                try:
-                    urls[idx] = future.result()
-                except Exception:
-                    urls[idx] = None
-        return [u or image_pages[i].get("thumb", "") for i, u in enumerate(urls)]
+        return self._resolve_with_pool(client, image_pages, workers)
 
     def _resolve_one(self, client: ImgbbClient, img: dict) -> str | None:
         html = client.fetch(img["page_url"])

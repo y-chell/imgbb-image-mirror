@@ -12,21 +12,19 @@ import logging
 import os
 import threading
 import time
+from contextlib import suppress
 
 from curl_cffi import requests as cffi_requests
 
 logger = logging.getLogger(__name__)
 
-# 用一个稳定的 Chrome 桌面 UA，配合 impersonate 指纹
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
-)
-
 
 class ImgbbClient:
-    """源站抓取客户端：限流 + 重试，curl_cffi impersonate Chrome。"""
+    """源站抓取客户端：限流 + 重试，curl_cffi impersonate Chrome。
+
+    UA 使用 impersonate 自带头，与 TLS 指纹严格配套；调用方传 headers 时
+    只做增量补充（如 Referer），不要覆盖 UA。
+    """
 
     def __init__(self, workers: int = 4, delay: float = 0.5, timeout: float = 30):
         self._delay = delay
@@ -51,7 +49,7 @@ class ImgbbClient:
                 try:
                     resp = self._session.get(
                         url,
-                        headers={**({"User-Agent": UA} if headers is None else headers)},
+                        headers=headers,
                         timeout=self._timeout,
                         allow_redirects=True,
                     )
@@ -65,29 +63,37 @@ class ImgbbClient:
         return ""
 
     def download(self, url: str, dest: str, retries: int = 3, headers: dict | None = None) -> bool:
+        """下载到 dest。先写 dest.part，成功后原子替换，失败不留半截文件。"""
         with self._semaphore:
             self._throttle()
-            for attempt in range(retries):
-                try:
-                    resp = self._session.get(
-                        url,
-                        headers={**({"User-Agent": UA} if headers is None else headers)},
-                        timeout=self._timeout,
-                        allow_redirects=True,
-                        stream=True,
-                    )
-                    resp.raise_for_status()
-                    with open(dest, "wb") as f:
-                        for chunk in resp.iter_content(8192):
-                            if chunk:
-                                f.write(chunk)
-                    return True
-                except Exception as e:
-                    logger.debug(f"download {url} attempt {attempt + 1} failed: {e}")
-                    if attempt == retries - 1:
-                        logger.warning(f"下载失败: {os.path.basename(dest)}: {e}")
-                        return False
-                    time.sleep(2**attempt)
+            tmp_path = f"{dest}.part"
+            try:
+                for attempt in range(retries):
+                    try:
+                        resp = self._session.get(
+                            url,
+                            headers=headers,
+                            timeout=self._timeout,
+                            allow_redirects=True,
+                            stream=True,
+                        )
+                        resp.raise_for_status()
+                        with open(tmp_path, "wb") as f:
+                            for chunk in resp.iter_content(8192):
+                                if chunk:
+                                    f.write(chunk)
+                        os.replace(tmp_path, dest)
+                        return True
+                    except Exception as e:
+                        logger.debug(f"download {url} attempt {attempt + 1} failed: {e}")
+                        if attempt == retries - 1:
+                            logger.warning(f"下载失败: {os.path.basename(dest)}: {e}")
+                            return False
+                        time.sleep(2**attempt)
+            finally:
+                # os.replace 成功后 tmp 已不存在；任何失败路径都清掉半截文件
+                with suppress(OSError):
+                    os.unlink(tmp_path)
         return False
 
     def close(self):

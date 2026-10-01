@@ -107,6 +107,9 @@ def prepare_mirror_metadata(
             "uploaded_url": "",
             "viewer_url": "",
             "uploaded_thumb": "",
+            # 原图解析失败回退缩略图时置 true，用于事后区分镜像结果里混入的缩略图
+            "thumb_fallback": not original_urls[idx]
+            or original_urls[idx] == image.get("thumb", ""),
         }
         if old.get("status") == "uploaded":
             entry["status"] = "uploaded"
@@ -171,21 +174,26 @@ def download_to_temp(browser, album: dict, image_info: dict, upload_name: str) -
 
 
 def upload_one(uploader, task: dict, album_id: str) -> tuple[dict | None, str]:
-    """执行单次上传，返回 (result, error)。task 由主循环构建。"""
+    """执行单次上传，返回 (result, error)。
+
+    uploader 契约：成功返回含非空 url 的 dict，失败抛异常。imgbb 偶发返回
+    200 却缺图片载荷，这里把空 url 也视为失败，避免空链接被标记成已上传。
+    """
     try:
         if task["type"] == "file":
-            return uploader.upload_file(
+            result = uploader.upload_file(
                 task["file_path"],
                 album_id,
                 name=task["title"],
                 upload_filename=task["upload_name"],
-            ), ""
-        result = uploader.upload_image(task["url"], album_id, name=task["title"])
-        if not result:
-            return None, "upload returned empty result"
-        return result, ""
+            )
+        else:
+            result = uploader.upload_image(task["url"], album_id, name=task["title"])
     except Exception as exc:
         return None, str(exc)
+    if not result.get("url"):
+        return None, f"imgbb 响应缺少图片 URL: {result}"
+    return result, ""
 
 
 def upload_worker(uploader, album_id: str, upload_queue, result_queue, max_retries: int = 2):
@@ -222,6 +230,35 @@ def upload_worker(uploader, album_id: str, upload_queue, result_queue, max_retri
             )
         finally:
             upload_queue.task_done()
+
+
+def collect_upload_results(
+    result_queue: queue.Queue,
+    metadata: dict,
+    state_path: str,
+    album_name: str,
+    progress: Progress,
+    img_task,
+    success: int,
+    failed: int,
+    block: bool = False,
+) -> tuple[int, int]:
+    """排空上传结果队列并落盘，返回更新后的 (success, failed)。"""
+    while True:
+        try:
+            item = result_queue.get(timeout=0.1 if block else 0)
+        except queue.Empty:
+            break
+        if item["result"]:
+            success += 1
+            mark_uploaded(metadata, item["index"], item["result"])
+        else:
+            failed += 1
+            mark_uploaded(metadata, item["index"], None)
+            logger.warning(f"上传失败: {album_name} #{item['index'] + 1}: {item['error']}")
+        save_metadata_file(state_path, metadata)
+        progress.update(img_task, completed=success + failed)
+    return success, failed
 
 
 def download_albums(client: ImgbbClient, albums: list[dict], cfg, args, browser=None) -> list[dict]:
@@ -389,32 +426,6 @@ def mirror_albums(client: ImgbbClient, albums: list[dict], cfg, args, browser=No
                     )
                     worker.start()
 
-                    def _collect_results(
-                        block: bool = False,
-                        _q=result_queue,
-                        _m=metadata,
-                        _sp=state_path,
-                        _an=album_name,
-                        _it=img_task,
-                    ):
-                        nonlocal success, failed
-                        while True:
-                            try:
-                                item = _q.get(timeout=0.1 if block else 0)
-                            except queue.Empty:
-                                break
-                            if item["result"]:
-                                success += 1
-                                mark_uploaded(_m, item["index"], item["result"])
-                            else:
-                                failed += 1
-                                mark_uploaded(_m, item["index"], None)
-                                logger.warning(
-                                    f"上传失败: {_an} #{item['index'] + 1}: {item['error']}"
-                                )
-                            save_metadata_file(_sp, _m)
-                            progress.update(_it, completed=success + failed)
-
                     pending_indices = [
                         idx
                         for idx in range(total)
@@ -446,7 +457,16 @@ def mirror_albums(client: ImgbbClient, albums: list[dict], cfg, args, browser=No
                                     "url": original_urls[idx],
                                 }
                             upload_queue.put(task)
-                            _collect_results()
+                            success, failed = collect_upload_results(
+                                result_queue,
+                                metadata,
+                                state_path,
+                                album_name,
+                                progress,
+                                img_task,
+                                success,
+                                failed,
+                            )
                         except Exception as e:
                             failed += 1
                             mark_uploaded(metadata, idx, None)
@@ -457,7 +477,17 @@ def mirror_albums(client: ImgbbClient, albums: list[dict], cfg, args, browser=No
                     upload_queue.put(None)
                     upload_queue.join()
                     worker.join()
-                    _collect_results(block=True)
+                    success, failed = collect_upload_results(
+                        result_queue,
+                        metadata,
+                        state_path,
+                        album_name,
+                        progress,
+                        img_task,
+                        success,
+                        failed,
+                        block=True,
+                    )
 
                     if success == total:
                         save_mirror_album(metadata, state_path, new_album, completed=True)

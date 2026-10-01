@@ -17,6 +17,7 @@ from imgbb_image_mirror.orchestrator import (
     mirror_state_path,
     nullcontext_bridge,
     prepare_mirror_metadata,
+    upload_one,
 )
 
 
@@ -286,6 +287,59 @@ class NullcontextBridgeTests(unittest.TestCase):
     def test_nullcontext_works(self):
         with nullcontext_bridge() as v:
             self.assertIsNone(v)
+
+
+class PrepareMetadataFallbackTests(unittest.TestCase):
+    def test_thumb_fallback_flag_marks_unresolved_images(self):
+        with tempfile.TemporaryDirectory() as d:
+            album = {
+                "id": "abc",
+                "name": "T",
+                "url": "https://xchina.co/photo/id-abc.html",
+                "source": "xchina",
+            }
+            pages = [
+                {"page_url": "p1", "thumb": "", "alt": "a", "source": "xchina"},
+                {"page_url": "p2", "thumb": "https://img.xchina.io/t2.jpg", "alt": "b", "source": "xchina"},
+            ]
+            # 第 1 张解析成功；第 2 张的"原图"和缩略图相同（解析失败回退）
+            urls = ["https://img.xchina.io/photos/abc/00001.jpg", "https://img.xchina.io/t2.jpg"]
+            metadata, _ = prepare_mirror_metadata(
+                mirror_state_path(d, album), album, album["url"], pages, urls
+            )
+            self.assertFalse(metadata["images"][0]["thumb_fallback"])
+            self.assertTrue(metadata["images"][1]["thumb_fallback"])
+
+
+class UploadOneTests(unittest.TestCase):
+    def _task(self, **overrides):
+        task = {
+            "type": "url",
+            "url": "https://src/x.jpg",
+            "index": 0,
+            "title": "t",
+            "upload_name": "x.jpg",
+        }
+        task.update(overrides)
+        return task
+
+    def test_success(self):
+        result, error = upload_one(FakeUploader(), self._task(), "album-1")
+        self.assertEqual(error, "")
+        self.assertEqual(result["url"], "https://i.ibb.co/x/y.jpg")
+
+    def test_exception_message_passed_through(self):
+        uploader = FakeUploader([RuntimeError("flood detected")])
+        result, error = upload_one(uploader, self._task(), "album-1")
+        self.assertIsNone(result)
+        self.assertEqual(error, "flood detected")
+
+    def test_empty_url_is_failure(self):
+        # imgbb 偶发 200 但缺载荷：空 url 必须视为失败，否则空链接被标成已上传
+        uploader = FakeUploader([{"url": "", "thumb": "", "viewer": ""}])
+        result, error = upload_one(uploader, self._task(), "album-1")
+        self.assertIsNone(result)
+        self.assertIn("缺少图片 URL", error)
 
 
 if __name__ == "__main__":

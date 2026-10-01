@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from contextlib import suppress
+from urllib.parse import urlparse
 
 from rich.logging import RichHandler
 
@@ -95,12 +96,15 @@ def main():
     if args.imgbb_token:
         cfg.imgbb.auth_token = args.imgbb_token
 
+    # workers <= 0 会让下载线程池直接抛 ValueError，在入口统一校验
+    if cfg.workers < 1:
+        raise SystemExit(f"workers 必须 >= 1（当前 {cfg.workers}）")
+
     setup_logging(quiet=args.quiet)
     os.makedirs(cfg.output, exist_ok=True)
 
     browser_needed = (
-        (args.url and "xchina.co" in args.url)
-        or (args.album_id and "xchina.co" in args.album_id)
+        "xchina.co" in (urlparse(args.url).hostname or "")
         or (cfg.imgbb.enabled and not cfg.imgbb.cookie)
     )
 

@@ -97,10 +97,18 @@ def resolve_original_urls(
 
     original_urls = adapter.resolve_originals(client, image_pages, workers, browser=browser)
     total = len(image_pages)
-    resolved = sum(
-        1 for i, u in enumerate(original_urls) if u and u != image_pages[i].get("thumb", "")
-    )
-    logger.info(f"  原图链接: {resolved}/{total} 张")
+    fallback_idx = [
+        i + 1
+        for i, u in enumerate(original_urls)
+        if not u or u == image_pages[i].get("thumb", "")
+    ]
+    if fallback_idx:
+        logger.warning(
+            f"  原图链接: {total - len(fallback_idx)}/{total} 张，"
+            f"以下解析失败已回退缩略图: {fallback_idx}"
+        )
+    else:
+        logger.info(f"  原图链接: {total}/{total} 张")
     return original_urls
 
 

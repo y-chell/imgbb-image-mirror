@@ -24,16 +24,8 @@ class ImgbbUploader:
         self._last_request = 0.0
         self._lock = Lock()
         self._session: cffi_requests.Session = cffi_requests.Session(impersonate="chrome")
-        self._session.headers.update(
-            {
-                "Cookie": cookie,
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
-            }
-        )
+        # UA 一律用 impersonate 自带头，手动写死版本会与 TLS 指纹错配（可检测特征）
+        self._session.headers.update({"Cookie": cookie})
         if not self._auth_token:
             self._refresh_auth_token()
 
@@ -58,9 +50,7 @@ class ImgbbUploader:
         else:
             raise RuntimeError("无法获取 auth_token，请检查 cookie 是否有效")
 
-    def _post_json(self, data: dict, mime: CurlMime | None = None) -> dict:
-        """提交到 imgbb/json。需要上传文件时传 CurlMime（curl_cffi 用 multipart）。"""
-        data["auth_token"] = self._auth_token
+    def _send(self, data: dict, mime: CurlMime | None) -> dict:
         self._throttle()
         if mime is not None:
             resp = self._session.post(
@@ -78,33 +68,26 @@ class ImgbbUploader:
                 allow_redirects=True,
             )
         resp.raise_for_status()
-        result = resp.json()
+        return resp.json()
+
+    def _post_json(self, data: dict, mime: CurlMime | None = None) -> dict:
+        """提交到 imgbb/json。需要上传文件时传 CurlMime（curl_cffi 用 multipart）。
+
+        imgbb 把业务错误嵌在 HTTP 200 的 JSON 里（status_code 400/403/429 等），
+        任何非 200 的 status_code 都抛错；仅 auth_token 过期时刷新凭据重发一次。
+        """
+        data["auth_token"] = self._auth_token
+        result = self._send(data, mime)
         if result.get("status_code") == 400:
             error = result.get("error", {}).get("message", "Unknown error")
             if "auth_token" in error.lower() or "denied" in error.lower():
                 logger.info("auth_token 过期，刷新中...")
                 self._refresh_auth_token()
                 data["auth_token"] = self._auth_token
-                self._throttle()
-                if mime is not None:
-                    resp = self._session.post(
-                        "https://imgbb.com/json",
-                        data=data,
-                        multipart=mime,
-                        timeout=60,
-                        allow_redirects=True,
-                    )
-                else:
-                    resp = self._session.post(
-                        "https://imgbb.com/json",
-                        data=data,
-                        timeout=60,
-                        allow_redirects=True,
-                    )
-                resp.raise_for_status()
-                result = resp.json()
-            if result.get("status_code") != 200:
-                raise RuntimeError(f"imgbb API 错误: {result}")
+                result = self._send(data, mime)
+        status = result.get("status_code")
+        if status is not None and status != 200:
+            raise RuntimeError(f"imgbb API 错误: {result}")
         return result
 
     def create_album(self, name: str, privacy: str = "public", description: str = "") -> dict:
@@ -124,75 +107,53 @@ class ImgbbUploader:
         logger.info(f"创建相册: {name} (id={album_id}, url={album_url})")
         return {"id": album_id, "url": album_url, "name": name}
 
-    def upload_image(self, image_url: str, album_id: str, name: str = "") -> dict | None:
-        """通过 URL 上传图片到指定相册（imgbb 支持 URL 上传，无需下载到本地）"""
-        try:
-            data = {
-                "action": "upload",
-                "type": "url",
-                "source": image_url,
-                "album_id": album_id,
-            }
-            if name:
-                data["title"] = name
-            result = self._post_json(data)
-            img = result.get("image", {})
-            return {
-                "url": img.get("url", ""),
-                "thumb": img.get("thumb", {}).get("url", ""),
-                "viewer": img.get("url_viewer", ""),
-            }
-        except Exception as e:
-            logger.error(f"上传失败 ({name}): {e}")
-            return None
+    def upload_image(self, image_url: str, album_id: str, name: str = "") -> dict:
+        """通过 URL 上传图片到指定相册（imgbb 支持 URL 上传，无需下载到本地）。失败抛异常。"""
+        data = {
+            "action": "upload",
+            "type": "url",
+            "source": image_url,
+            "album_id": album_id,
+        }
+        if name:
+            data["title"] = name
+        result = self._post_json(data)
+        img = result.get("image", {})
+        return {
+            "url": img.get("url", ""),
+            "thumb": img.get("thumb", {}).get("url", ""),
+            "viewer": img.get("url_viewer", ""),
+        }
 
     def upload_file(
         self, file_path: str, album_id: str, name: str = "", upload_filename: str = ""
-    ) -> dict | None:
-        """上传本地文件到指定相册"""
-        try:
-            data = {
-                "action": "upload",
-                "type": "file",
-                "album_id": album_id,
-            }
-            if name:
-                data["title"] = name
-            multipart_name = upload_filename or os.path.basename(file_path)
-            mime_type = mimetypes.guess_type(multipart_name)[0] or "application/octet-stream"
-            # curl_cffi 用 CurlMime 而非 files=（files 在 0.14 已不支持）
-            mime = CurlMime()
-            with open(file_path, "rb") as f:
-                mime.addpart(
-                    name="source",
-                    filename=multipart_name,
-                    content_type=mime_type,
-                    data=f.read(),
-                )
-                result = self._post_json(data, mime=mime)
-            img = result.get("image", {})
-            return {
-                "url": img.get("url", ""),
-                "thumb": img.get("thumb", {}).get("url", ""),
-                "viewer": img.get("url_viewer", ""),
-            }
-        except Exception as e:
-            logger.error(f"上传失败 ({file_path}): {e}")
-            return None
-
-    def delete_album(self, album_id: str) -> bool:
-        try:
-            self._post_json(
-                {
-                    "action": "delete",
-                    "delete": "album",
-                    "deleting[id]": album_id,
-                    "single": "true",
-                }
+    ) -> dict:
+        """上传本地文件到指定相册。失败抛异常。"""
+        data = {
+            "action": "upload",
+            "type": "file",
+            "album_id": album_id,
+        }
+        if name:
+            data["title"] = name
+        multipart_name = upload_filename or os.path.basename(file_path)
+        mime_type = mimetypes.guess_type(multipart_name)[0] or "application/octet-stream"
+        # curl_cffi 用 CurlMime 而非 files=（files 在 0.14 已不支持）
+        mime = CurlMime()
+        with open(file_path, "rb") as f:
+            mime.addpart(
+                name="source",
+                filename=multipart_name,
+                content_type=mime_type,
+                data=f.read(),
             )
-            return True
-        except Exception:
-            return False
+            result = self._post_json(data, mime=mime)
+        img = result.get("image", {})
+        return {
+            "url": img.get("url", ""),
+            "thumb": img.get("thumb", {}).get("url", ""),
+            "viewer": img.get("url_viewer", ""),
+        }
 
     def close(self):
         self._session.close()

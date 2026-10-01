@@ -19,7 +19,7 @@ def load_metadata_file(path: str) -> dict | None:
 def save_metadata_file(path: str, metadata: dict):
     """原子写入：先写临时文件再 os.replace，避免中断留下半个 JSON。
 
-    失败时保证不破坏原文件 —— 临时文件会保留为孤儿，由调用方清理。
+    失败时清理临时文件，原文件保持不变。
     """
     target_dir = os.path.dirname(path)
     if target_dir:

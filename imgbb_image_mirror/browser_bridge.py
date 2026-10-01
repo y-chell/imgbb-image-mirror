@@ -1,5 +1,6 @@
 import os
 import re
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from playwright.sync_api import sync_playwright
@@ -106,12 +107,17 @@ class BrowserBridge:
         return self
 
     def __exit__(self, *args):
-        if self._asset_page:
-            self._asset_page.close()
-        if self._browser:
-            self._browser.close()
-        if self._playwright:
-            self._playwright.stop()
+        # 逐层清理互不阻断：前一步失败不影响后续资源释放
+        try:
+            if self._asset_page:
+                with suppress(Exception):
+                    self._asset_page.close()
+            if self._browser:
+                with suppress(Exception):
+                    self._browser.close()
+        finally:
+            if self._playwright:
+                self._playwright.stop()
 
     def _new_page(self) -> Page:
         assert self._context is not None, "BrowserBridge 未进入上下文"

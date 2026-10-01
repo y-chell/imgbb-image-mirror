@@ -33,7 +33,6 @@ class Config:
     workers: int = 4
     delay: float = 0.5
     max_pages: int = 100
-    user_agent: str = ""
     imgbb: ImgbbConfig = field(default_factory=ImgbbConfig)
 
 
@@ -62,7 +61,7 @@ def load_config(path: str | None = None) -> Config:
         with open(path, "rb") as f:
             data = tomllib.load(f)
         scraper = data.get("scraper", {})
-        for key in ("output", "workers", "delay", "max_pages", "user_agent"):
+        for key in ("output", "workers", "delay", "max_pages"):
             if key in scraper:
                 setattr(cfg, key, scraper[key])
         imgbb_data = data.get("imgbb", {})
